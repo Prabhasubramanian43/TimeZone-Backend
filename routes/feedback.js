@@ -76,10 +76,27 @@ TIMEZONE Watches Team
     };
 
     // Send both emails
-    const emailResults = await Promise.allSettled([
-      transporter.sendMail(adminEmail),
-      transporter.sendMail(customerEmail),
-    ]);
+   const emailResults = await Promise.allSettled([
+  transporter.sendMail(adminEmail),
+  transporter.sendMail(customerEmail),
+]);
+
+emailResults.forEach((result, index) => {
+  if (result.status === "fulfilled") {
+    console.log(
+      index === 0
+        ? "Admin feedback email sent successfully"
+        : "Customer feedback email sent successfully",
+    );
+  } else {
+    console.error(
+      index === 0
+        ? "Admin feedback email failed:"
+        : "Customer feedback email failed:",
+      result.reason,
+    );
+  }
+});
 
     emailResults.forEach((result, index) => {
       if (result.status === "fulfilled") {

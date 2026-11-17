@@ -6,7 +6,8 @@ const adminAuth = require("../middleware/adminAuth");
 
 const router = express.Router();
 
-const ADMIN_EMAIL = "prabhasubramanian35@gmail.com";
+const ADMIN_EMAIL =
+  process.env.ADMIN_EMAIL || "prabhasubramanian35@gmail.com";
 
 // ======================================
 // SEND CUSTOMER AND ADMIN ORDER EMAILS
@@ -15,50 +16,79 @@ const ADMIN_EMAIL = "prabhasubramanian35@gmail.com";
 async function sendOrderEmails(order) {
   const productDetails = order.products
     .map(
-      (product) => `${product.name} - ₹${product.price} x ${product.quantity}`,
+      (product) =>
+        `${product.name} - ₹${product.price} x ${product.quantity}`,
     )
     .join("\n");
 
+  const sender = `"TIMEZONE Watches" <${process.env.SMTP_EMAIL}>`;
+
   const customerMail = {
-    from: process.env.SMTP_EMAIL,
+    from: sender,
     to: order.email,
     subject: "TIMEZONE - Order Confirmation",
-    text: `
-Hello ${order.customerName},
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 25px; color: #333;">
+        <h2 style="color: #b8860b;">TIMEZONE Watches</h2>
 
-Your order has been placed successfully!
+        <h3>Order Confirmed!</h3>
 
-Order Details:
+        <p>Hello ${order.customerName},</p>
 
-${productDetails}
+        <p>Your order has been placed successfully.</p>
 
-Total Amount: ₹${order.totalAmount}
-Payment Method: ${order.paymentMethod}
-Order Status: ${order.orderStatus}
+        <h3>Order Details</h3>
 
-Thank you for shopping with TIMEZONE Watches!
-`,
+        <p><strong>Order ID:</strong> ${order._id}</p>
+
+        <p><strong>Products:</strong></p>
+
+        <pre>${productDetails}</pre>
+
+        <p><strong>Total Amount:</strong> ₹${order.totalAmount}</p>
+
+        <p><strong>Payment Method:</strong> ${order.paymentMethod}</p>
+
+        <p><strong>Order Status:</strong> ${order.orderStatus}</p>
+
+        <p>Thank you for shopping with TIMEZONE Watches!</p>
+
+        <h3>Happy Shopping!</h3>
+      </div>
+    `,
   };
 
   const adminMail = {
-    from: process.env.SMTP_EMAIL,
+    from: sender,
     to: ADMIN_EMAIL,
     subject: "TIMEZONE - New Customer Order",
-    text: `
-New order received!
+    html: `
+      <div style="font-family: Arial, sans-serif; padding: 25px; color: #333;">
+        <h2 style="color: #b8860b;">New Order Received!</h2>
 
-Customer Name: ${order.customerName}
-Email: ${order.email}
-Phone: ${order.phone}
-Address: ${order.address}
+        <h3>Order Details</h3>
 
-Products:
-${productDetails}
+        <p><strong>Order ID:</strong> ${order._id}</p>
 
-Total Amount: ₹${order.totalAmount}
-Payment Method: ${order.paymentMethod}
-Order Status: ${order.orderStatus}
-`,
+        <p><strong>Customer Name:</strong> ${order.customerName}</p>
+
+        <p><strong>Email:</strong> ${order.email}</p>
+
+        <p><strong>Phone:</strong> ${order.phone}</p>
+
+        <p><strong>Address:</strong> ${order.address}</p>
+
+        <p><strong>Products:</strong></p>
+
+        <pre>${productDetails}</pre>
+
+        <p><strong>Total Amount:</strong> ₹${order.totalAmount}</p>
+
+        <p><strong>Payment Method:</strong> ${order.paymentMethod}</p>
+
+        <p><strong>Order Status:</strong> ${order.orderStatus}</p>
+      </div>
+    `,
   };
 
   const results = await Promise.allSettled([
@@ -66,11 +96,26 @@ Order Status: ${order.orderStatus}
     transporter.sendMail(adminMail),
   ]);
 
-  results.forEach((result) => {
-    if (result.status === "rejected") {
-      console.log("Order email error:", result.reason);
-    }
-  });
+  const customerResult = results[0];
+  const adminResult = results[1];
+
+  if (customerResult.status === "fulfilled") {
+    console.log(
+      "Customer order email sent:",
+      customerResult.value.messageId,
+    );
+  } else {
+    console.error("Customer order email failed:", customerResult.reason);
+  }
+
+  if (adminResult.status === "fulfilled") {
+    console.log(
+      "Admin order email sent:",
+      adminResult.value.messageId,
+    );
+  } else {
+    console.error("Admin order email failed:", adminResult.reason);
+  }
 }
 
 // ======================================
@@ -213,7 +258,8 @@ router.post("/", async (req, res) => {
     }
 
     const calculatedTotal = formattedProducts.reduce(
-      (total, product) => total + product.price * product.quantity,
+      (total, product) =>
+        total + product.price * product.quantity,
       0,
     );
 
@@ -230,7 +276,7 @@ router.post("/", async (req, res) => {
     const newOrder = new Order({
       userId,
       customerName,
-      email,
+      email: email.trim().toLowerCase(),
       phone,
       address,
       products: formattedProducts,
@@ -239,12 +285,19 @@ router.post("/", async (req, res) => {
       orderStatus: "Order Placed",
     });
 
+    // Save order first
     const savedOrder = await newOrder.save();
 
-    // Send emails without interrupting successful order placement
-    await sendOrderEmails(savedOrder);
+    console.log("New order created:", savedOrder._id);
 
-    res.status(201).json({
+    // Send customer and admin emails
+    try {
+      await sendOrderEmails(savedOrder);
+    } catch (emailError) {
+      console.error("Order email sending error:", emailError);
+    }
+
+    return res.status(201).json({
       success: true,
       message: "Order placed successfully!",
       order: savedOrder,
@@ -295,6 +348,7 @@ router.get("/:userId", async (req, res) => {
 
 // ======================================
 // PUT - UPDATE ORDER STATUS
+// SEND CUSTOMER EMAIL
 // ======================================
 
 router.put("/:id", adminAuth, async (req, res) => {
@@ -324,17 +378,77 @@ router.put("/:id", adminAuth, async (req, res) => {
       });
     }
 
-    const updatedOrder = await Order.findByIdAndUpdate(
-      id,
-      { orderStatus },
-      { new: true, runValidators: true },
-    );
+    const existingOrder = await Order.findById(id);
 
-    if (!updatedOrder) {
+    if (!existingOrder) {
       return res.status(404).json({
         success: false,
         message: "Order not found.",
       });
+    }
+
+    const previousStatus = existingOrder.orderStatus;
+
+    existingOrder.orderStatus = orderStatus;
+
+    const updatedOrder = await existingOrder.save();
+
+    // Send customer status update email only if status changes
+    if (previousStatus !== orderStatus) {
+      try {
+        await transporter.sendMail({
+          from: `"TIMEZONE Watches" <${process.env.SMTP_EMAIL}>`,
+          to: updatedOrder.email,
+          subject: `TIMEZONE - Order ${orderStatus}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; padding: 25px; color: #333;">
+
+              <h2 style="color: #b8860b;">TIMEZONE Watches</h2>
+
+              <h3>Order Status Update</h3>
+
+              <p>Hello ${updatedOrder.customerName},</p>
+
+              <p>Your order status has been updated successfully.</p>
+
+              <h3>Order Details</h3>
+
+              <p>
+                <strong>Order ID:</strong>
+                ${updatedOrder._id}
+              </p>
+
+              <p>
+                <strong>Previous Status:</strong>
+                ${previousStatus}
+              </p>
+
+              <p>
+                <strong>Current Status:</strong>
+                ${orderStatus}
+              </p>
+
+              <p>
+                <strong>Total Amount:</strong>
+                ₹${updatedOrder.totalAmount}
+              </p>
+
+              <p>
+                Thank you for shopping with TIMEZONE Watches!
+              </p>
+
+            </div>
+          `,
+        });
+
+        console.log(
+          "Order status email sent successfully:",
+          updatedOrder.email,
+          orderStatus,
+        );
+      } catch (emailError) {
+        console.error("Order status email failed:", emailError);
+      }
     }
 
     res.status(200).json({
